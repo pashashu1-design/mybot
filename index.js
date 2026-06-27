@@ -8,6 +8,7 @@ const ffmpegPath = require("ffmpeg-static");
 const { TodoistApi } = require("@doist/todoist-api-typescript");
 const mammoth = require("mammoth");
 const Redis = require("ioredis");
+const cron = require("node-cron");
 
 ffmpeg.setFfmpegPath(ffmpegPath);
 
@@ -84,6 +85,22 @@ function getNow() {
     + ", " + now.toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit", timeZone: "Europe/Samara" });
 }
 
+
+function mainMenu() {
+  return {
+    reply_markup: {
+      keyboard: [
+        ["📋 Задачи сегодня", "📅 Задачи завтра"],
+        ["⚠️ Просроченные", "🔴 Срочные"],
+        ["📁 Проекты", "📋 Все задачи"],
+      ],
+      resize_keyboard: true,
+      persistent: true,
+    }
+  };
+}
+
+const pendingDeletes = {};
 async function getTodoistTasks(filter) {
   return toArray(await todoist.getTasks({ filter }));
 }
@@ -166,12 +183,19 @@ async function handleText(ctx, text) {
 
       case "delete":
         if (intent.task_nums && intent.task_nums.length > 0) {
-          const deleted = [];
-          for (const num of intent.task_nums) {
-            const task = allTasks[num - 1];
-            if (task) { await todoist.deleteTask(task.id); deleted.push(task.content); }
-          }
-          await ctx.reply(deleted.length > 0 ? "Удалено:\n" + deleted.join("\n") : "Задача не найдена.");
+          const toDelete = intent.task_nums.map(num => allTasks[num - 1]).filter(Boolean);
+          if (toDelete.length > 0) {
+            pendingDeletes[chatId] = toDelete.map(t => t.id);
+            const names = toDelete.map(t => t.content).join("\n");
+            await ctx.reply("Удалить эти задачи?\n" + names, {
+              reply_markup: {
+                inline_keyboard: [[
+                  { text: "Да, удалить", callback_data: "confirm_delete" },
+                  { text: "Отмена", callback_data: "cancel_delete" }
+                ]]
+              }
+            });
+          } else { await ctx.reply("Задача не найдена."); }
         }
         break;
 
@@ -276,8 +300,8 @@ const helpText = "Привет! Я твой личный ассистент.\n\n
   "/projects — проекты\n" +
   "/clear — очистить историю";
 
-bot.command("start", async (ctx) => { await ctx.reply(helpText); });
-bot.command("help", async (ctx) => { await ctx.reply(helpText); });
+bot.command("start", async (ctx) => { await ctx.reply(helpText, mainMenu()); });
+bot.command("help", async (ctx) => { await ctx.reply(helpText, mainMenu()); });
 
 bot.command("tasks", async (ctx) => {
   const t = await getTodoistTasks("today");
@@ -317,6 +341,41 @@ bot.command("projects", async (ctx) => {
 bot.command("clear", async (ctx) => {
   await redis.del("history:" + ctx.chat.id);
   await ctx.reply("История очищена.");
+});
+
+bot.hears("📋 Задачи сегодня", async (ctx) => {
+  const t = await getTodoistTasks("today");
+  await ctx.reply(getNow() + "\n\nЗадачи на сегодня:\n" + formatTaskList(t), mainMenu());
+});
+
+bot.hears("📅 Задачи завтра", async (ctx) => {
+  const t = await getTodoistTasks("tomorrow");
+  await ctx.reply("Задачи на завтра:\n" + formatTaskList(t), mainMenu());
+});
+
+bot.hears("⚠️ Просроченные", async (ctx) => {
+  const t = await getTodoistTasks("overdue");
+  await ctx.reply("Просроченные:\n" + formatTaskList(t), mainMenu());
+});
+
+bot.hears("🔴 Срочные", async (ctx) => {
+  const t = await getTodoistTasks("p1 | p2");
+  await ctx.reply("Срочные и важные:\n" + formatTaskList(t), mainMenu());
+});
+
+bot.hears("📁 Проекты", async (ctx) => {
+  const projects = toArray(await todoist.getProjects());
+  const allTasks = toArray(await todoist.getTasks());
+  const list = projects.map((p, i) => {
+    const count = allTasks.filter(t => t.projectId === p.id).length;
+    return (i + 1) + ". " + p.name + " (" + count + " задач)";
+  }).join("\n");
+  await ctx.reply("Проекты:\n" + list, mainMenu());
+});
+
+bot.hears("📋 Все задачи", async (ctx) => {
+  const t = toArray(await todoist.getTasks());
+  await ctx.reply("Все задачи (" + t.length + "):\n" + formatTaskList(t), mainMenu());
 });
 
 bot.on("text", async (ctx) => {
@@ -360,6 +419,41 @@ bot.on("document", async (ctx) => {
     await ctx.reply("Не удалось прочитать документ.");
   }
 });
+
+
+bot.on("callback_query", async (ctx) => {
+  const data = ctx.callbackQuery.data;
+  const chatId = ctx.chat.id;
+  if (data === "confirm_delete") {
+    const ids = pendingDeletes[chatId];
+    if (ids) {
+      for (const id of ids) { await todoist.deleteTask(id); }
+      delete pendingDeletes[chatId];
+      await ctx.editMessageText("Удалено.");
+    }
+  } else if (data === "cancel_delete") {
+    delete pendingDeletes[chatId];
+    await ctx.editMessageText("Отменено.");
+  }
+  await ctx.answerCbQuery();
+});
+
+// Утреннее резюме — каждый день в 8:00 по Самаре (UTC+4 = 04:00 UTC)
+if (ALLOWED_USER) {
+  cron.schedule("0 4 * * *", async () => {
+    try {
+      const today = await getTodoistTasks("today");
+      const overdue = await getTodoistTasks("overdue");
+      const now = getNow();
+      let msg = "Доброе утро! " + now + "\n\n";
+      if (overdue.length > 0) {
+        msg += "⚠️ Просроченные (" + overdue.length + "):\n" + formatTaskList(overdue) + "\n\n";
+      }
+      msg += "📋 Задачи на сегодня (" + today.length + "):\n" + formatTaskList(today);
+      await bot.telegram.sendMessage(ALLOWED_USER, msg);
+    } catch (err) { console.error("Cron error:", err); }
+  }, { timezone: "Europe/Samara" });
+}
 
 bot.launch();
 console.log("Бот запущен...");
