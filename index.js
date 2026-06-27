@@ -1,92 +1,64 @@
 require("dotenv").config();
 const { Telegraf } = require("telegraf");
 const Groq = require("groq-sdk");
-const { DAVClient } = require("tsdav");
-const { v4: uuidv4 } = require("uuid");
-
+const axios = require("axios");
+const fs = require("fs");
+const ffmpeg = require("fluent-ffmpeg");
+const ffmpegPath = require("ffmpeg-static");
+ffmpeg.setFfmpegPath(ffmpegPath);
 const bot = new Telegraf(process.env.TELEGRAM_TOKEN);
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
-
-let davClient;
-
-async function initCalendar() {
-  davClient = new DAVClient({
-    serverUrl: "https://caldav.icloud.com",
-    credentials: {
-      username: process.env.APPLE_ID,
-      password: process.env.APPLE_APP_PASSWORD,
-    },
-    authMethod: "Basic",
-    defaultAccountType: "caldav",
+const chats = {};
+async function transcribeVoice(fileUrl) {
+  const oggPath = "/tmp/voice.ogg";
+  const mp3Path = "/tmp/voice.mp3";
+  const response = await axios({ url: fileUrl, responseType: "stream" });
+  await new Promise((resolve, reject) => {
+    const writer = fs.createWriteStream(oggPath);
+    response.data.pipe(writer);
+    writer.on("finish", resolve);
+    writer.on("error", reject);
   });
-  await davClient.login();
-  console.log("Календарь подключён");
+  await new Promise((resolve, reject) => {
+    ffmpeg(oggPath).toFormat("mp3").save(mp3Path).on("end", resolve).on("error", reject);
+  });
+  const transcription = await groq.audio.transcriptions.create({
+    file: fs.createReadStream(mp3Path),
+    model: "whisper-large-v3",
+    language: "ru",
+  });
+  fs.unlinkSync(oggPath);
+  fs.unlinkSync(mp3Path);
+  return transcription.text;
 }
-
-async function parseEvent(text) {
-  const today = new Date().toISOString().split("T")[0];
+async function handleText(ctx, text) {
+  const chatId = ctx.chat.id;
+  if (!chats[chatId]) chats[chatId] = [];
+  chats[chatId].push({ role: "user", content: text });
   const response = await groq.chat.completions.create({
     model: "llama-3.3-70b-versatile",
-    messages: [
-      {
-        role: "system",
-        content: `Сегодня ${today}. Извлеки детали события из сообщения и верни ТОЛЬКО JSON: {"title": "...", "date": "YYYY-MM-DD", "time": "HH:MM"}. Если время не указано — используй "10:00". Если это не запрос на событие — верни {"error": "not an event"}.`
-      },
-      { role: "user", content: text }
-    ],
+    messages: chats[chatId],
   });
-  const json = response.choices[0].message.content;
-  return JSON.parse(json.replace(/```json|```/g, "").trim());
+  const reply = response.choices[0].message.content;
+  chats[chatId].push({ role: "assistant", content: reply });
+  if (chats[chatId].length > 20) chats[chatId] = chats[chatId].slice(-20);
+  await ctx.reply(reply);
 }
-
-async function addEvent(title, date, time) {
-  const calendars = await davClient.fetchCalendars();
-  const calendar = calendars[0];
-  const dateStr = date.replace(/-/g, "");
-  const timeStr = time.replace(/:/g, "") + "00";
-  const hour = (parseInt(time.split(":")[0]) + 1).toString().padStart(2, "0");
-  const endTimeStr = hour + time.split(":")[1] + "00";
-  const ics = `BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nUID:${uuidv4()}@mybot\r\nDTSTART:${dateStr}T${timeStr}\r\nDTEND:${dateStr}T${endTimeStr}\r\nSUMMARY:${title}\r\nEND:VEVENT\r\nEND:VCALENDAR`;
-  await davClient.createCalendarObject({ calendar, filename: `${uuidv4()}.ics`, iCalString: ics });
-}
-
-const chats = {};
-
 bot.on("text", async (ctx) => {
-  const chatId = ctx.chat.id;
-  const text = ctx.message.text;
-  if (!chats[chatId]) chats[chatId] = [];
-
-  if (/(добавь|создай|запланируй)/i.test(text)) {
-    try {
-      const event = await parseEvent(text);
-      if (!event.error) {
-        await addEvent(event.title, event.date, event.time);
-        await ctx.reply(`✅ Добавлено: ${event.title} — ${event.date} в ${event.time}`);
-        return;
-      }
-    } catch (err) {
-      console.error(err);
-    }
-  }
-
-  chats[chatId].push({ role: "user", content: text });
+  await handleText(ctx, ctx.message.text);
+});
+bot.on("voice", async (ctx) => {
   try {
-    const response = await groq.chat.completions.create({
-      model: "llama-3.3-70b-versatile",
-      messages: chats[chatId],
-    });
-    const reply = response.choices[0].message.content;
-    chats[chatId].push({ role: "assistant", content: reply });
-    if (chats[chatId].length > 20) chats[chatId] = chats[chatId].slice(-20);
-    await ctx.reply(reply);
+    await ctx.reply("Распознаю голос...");
+    const fileId = ctx.message.voice.file_id;
+    const fileUrl = await ctx.telegram.getFileLink(fileId);
+    const text = await transcribeVoice(fileUrl.href);
+    await ctx.reply("Распознано: " + text);
+    await handleText(ctx, text);
   } catch (err) {
     console.error(err);
-    ctx.reply("Ошибка, попробуй ещё раз.");
+    ctx.reply("Не удалось распознать голос.");
   }
 });
-
-initCalendar().then(() => {
-  bot.launch();
-  console.log("Бот запущен...");
-});
+bot.launch();
+console.log("Бот запущен...");
