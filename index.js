@@ -102,13 +102,7 @@ function getTodayISO() {
 }
 
 function filterByDate(tasks, dateISO) {
-  return tasks.filter(t => {
-    if (!t.due) return false;
-    if (t.due.date && t.due.date === dateISO) return true;
-    if (t.due.datetime && t.due.datetime.startsWith(dateISO)) return true;
-    if (t.due.date && t.due.date.startsWith(dateISO)) return true;
-    return false;
-  });
+  return tasks.filter(t => t.due && (t.due.date === dateISO || (t.due.datetime && t.due.datetime.startsWith(dateISO))));
 }
 
 async function analyzeIntent(text, ctxData) {
@@ -356,15 +350,6 @@ const startMsg = "Привет! Я твой личный ассистент.\n\n
   "/labels — метки\n" +
   "/clear — очистить историю";
 
-bot.command("debug", async (ctx) => {
-  const { allTasks } = await loadTodoistContext();
-  const sample = allTasks.slice(0, 3);
-  const info = sample.map(t => t.content + " | due: " + JSON.stringify(t.due)).join("
-");
-  await ctx.reply("Всего задач: " + allTasks.length + "
-
-" + info);
-});
 bot.command("start", async (ctx) => { await ctx.reply(startMsg); });
 bot.command("help", async (ctx) => { await ctx.reply(startMsg); });
 
