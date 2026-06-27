@@ -101,8 +101,44 @@ function mainMenu() {
 }
 
 const pendingDeletes = {};
+function getDateISO(offsetDays) {
+  const d = new Date(new Date().toLocaleString("en-US", { timeZone: "Europe/Samara" }));
+  d.setDate(d.getDate() + offsetDays);
+  return d.toISOString().split("T")[0];
+}
+
+function taskMatchesDate(task, dateISO) {
+  if (!task.due) return false;
+  const taskDate = task.due.date || (task.due.datetime ? task.due.datetime.substring(0, 10) : null);
+  return taskDate === dateISO;
+}
+
+async function getAllTasks() {
+  return toArray(await todoist.getTasks());
+}
+
 async function getTodoistTasks(filter) {
-  return toArray(await todoist.getTasks({ filter }));
+  const all = await getAllTasks();
+  const todayISO = getDateISO(0);
+  const tomorrowISO = getDateISO(1);
+  
+  if (filter === "today") {
+    return all.filter(t => taskMatchesDate(t, todayISO));
+  }
+  if (filter === "tomorrow") {
+    return all.filter(t => taskMatchesDate(t, tomorrowISO));
+  }
+  if (filter === "overdue") {
+    return all.filter(t => {
+      if (!t.due) return false;
+      const taskDate = t.due.date || (t.due.datetime ? t.due.datetime.substring(0, 10) : null);
+      return taskDate && taskDate < todayISO;
+    });
+  }
+  if (filter === "p1 | p2") {
+    return all.filter(t => t.priority === 1 || t.priority === 2);
+  }
+  return all;
 }
 
 async function analyzeIntent(text, tasks, projects) {
@@ -147,7 +183,7 @@ async function handleText(ctx, text) {
   }
 
   try {
-    const allTasks = toArray(await todoist.getTasks());
+    const allTasks = await getAllTasks();
     const projects = toArray(await todoist.getProjects());
     const intent = await analyzeIntent(text, allTasks, projects);
 
@@ -233,7 +269,8 @@ async function handleText(ctx, text) {
         break;
 
       case "show_all":
-        await ctx.reply("Все задачи (" + allTasks.length + "):\n" + formatTaskList(allTasks));
+        const allForShow = await getAllTasks();
+        await ctx.reply("Все задачи (" + allForShow.length + "):\n" + formatTaskList(allForShow));
         break;
 
       case "show_projects":
@@ -324,13 +361,13 @@ bot.command("urgent", async (ctx) => {
 });
 
 bot.command("all", async (ctx) => {
-  const t = toArray(await todoist.getTasks());
+  const t = await getAllTasks();
   await ctx.reply("Все задачи (" + t.length + "):\n" + formatTaskList(t));
 });
 
 bot.command("projects", async (ctx) => {
   const projects = toArray(await todoist.getProjects());
-  const allTasks = toArray(await todoist.getTasks());
+  const allTasks = await getAllTasks();
   const list = projects.map((p, i) => {
     const count = allTasks.filter(t => t.projectId === p.id).length;
     return (i + 1) + ". " + p.name + " (" + count + " задач)";
@@ -365,7 +402,7 @@ bot.hears("🔴 Срочные", async (ctx) => {
 
 bot.hears("📁 Проекты", async (ctx) => {
   const projects = toArray(await todoist.getProjects());
-  const allTasks = toArray(await todoist.getTasks());
+  const allTasks = await getAllTasks();
   const list = projects.map((p, i) => {
     const count = allTasks.filter(t => t.projectId === p.id).length;
     return (i + 1) + ". " + p.name + " (" + count + " задач)";
