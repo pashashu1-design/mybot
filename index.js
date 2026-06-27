@@ -350,6 +350,18 @@ const startMsg = "Привет! Я твой личный ассистент.\n\n
   "/labels — метки\n" +
   "/clear — очистить историю";
 
+bot.command("debug", async (ctx) => {
+  try {
+    const allD = toArray(await todoist.getTasks());
+    const todayD = toArray(await todoist.getTasks({ filter: "today" }));
+    const lines = allD.slice(0, 5).map(t => {
+      const d = t.due ? (t.due.date || t.due.datetime || "no date") : "null";
+      return t.content + " | " + d;
+    });
+    const msg = "Всего: " + allD.length + " | Today: " + todayD.length + "\n" + lines.join("\n");
+    await ctx.reply(msg);
+  } catch(e) { await ctx.reply("Ошибка: " + e.message); }
+});
 bot.command("start", async (ctx) => { await ctx.reply(startMsg); });
 bot.command("help", async (ctx) => { await ctx.reply(startMsg); });
 
