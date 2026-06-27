@@ -113,9 +113,9 @@ async function handleText(ctx, text) {
     return;
   }
   try {
-    const todayTasks = await todoist.getTasks({ filter: "today" });
-    const projects = await todoist.getProjects();
-    const labels = await todoist.getLabels();
+    const todayTasksRes = await todoist.getTasks({ filter: "today" }); const todayTasks = Array.isArray(todayTasksRes) ? todayTasksRes : todayTasksRes.results || [];
+    const projectsRes = await todoist.getProjects(); const projects = Array.isArray(projectsRes) ? projectsRes : projectsRes.results || [];
+    const labelsRes = await todoist.getLabels(); const labels = Array.isArray(labelsRes) ? labelsRes : labelsRes.results || [];
     const context = {
       today_tasks: todayTasks.map((t, i) => `${i+1}. ${t.content}`),
       projects: projects.map(p => p.name),
