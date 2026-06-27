@@ -239,7 +239,7 @@ async function handleText(ctx, text) {
         break;
 
       case "show_today":
-        const today = allTasks.filter(t => t.due && (t.due.date === new Date().toISOString().split("T")[0] || (t.due.datetime && t.due.datetime.startsWith(new Date().toISOString().split("T")[0]))));
+        const todayStr = new Date(new Date().toLocaleString("en-US", {timeZone: "Europe/Samara"})).toISOString().split("T")[0]; const today = allTasks.filter(t => t.due && (t.due.date === todayStr || (t.due.datetime && t.due.datetime.includes(todayStr))));
         await ctx.reply("📋 Сегодня:\n" + formatTaskList(today));
         break;
 
@@ -311,6 +311,13 @@ async function handleText(ctx, text) {
         break;
 
       default:
+        if (/(задач|сегодня|завтра|покажи|список)/i.test(text)) {
+          const todayStr2 = new Date(new Date().toLocaleString("en-US", {timeZone: "Europe/Samara"})).toISOString().split("T")[0];
+          const todayFiltered = allTasks.filter(t => t.due && (t.due.date === todayStr2 || (t.due.datetime && t.due.datetime.includes(todayStr2))));
+          await ctx.reply("📋 Сегодня:
+" + formatTaskList(todayFiltered));
+          return;
+        }
         const history = await getHistory(chatId);
         const corrections = await getCorrections(chatId);
         const messages = [...history];
