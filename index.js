@@ -144,8 +144,9 @@ priority: 1=🔴срочно 2=🟠важно 3=🔵средне 4=⚪обычн
     ],
   });
 
-  const raw = res.choices[0].message.content.replace(/```json|```/g, "").trim();
-  return JSON.parse(raw);
+  const raw = res.choices[0].message.content.replace(/```json|```/g, '').trim();
+  const match = raw.match(/{[sS]*}/);
+  try { return JSON.parse(match[0]); } catch { return { action: 'chat', task_nums: [], tasks_to_add: [] }; }
 }
 
 async function searchWeb(query) {
