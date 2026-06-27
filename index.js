@@ -102,7 +102,13 @@ function getTodayISO() {
 }
 
 function filterByDate(tasks, dateISO) {
-  return tasks.filter(t => t.due && (t.due.date === dateISO || (t.due.datetime && t.due.datetime.startsWith(dateISO))));
+  return tasks.filter(t => {
+    if (!t.due) return false;
+    if (t.due.date && t.due.date === dateISO) return true;
+    if (t.due.datetime && t.due.datetime.startsWith(dateISO)) return true;
+    if (t.due.date && t.due.date.startsWith(dateISO)) return true;
+    return false;
+  });
 }
 
 async function analyzeIntent(text, ctxData) {
