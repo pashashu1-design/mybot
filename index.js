@@ -8,6 +8,7 @@ const ffmpegPath = require("ffmpeg-static");
 const { TodoistApi } = require("@doist/todoist-api-typescript");
 const mammoth = require("mammoth");
 const Redis = require("ioredis");
+const { search } = require("duck-duck-scrape");
 ffmpeg.setFfmpegPath(ffmpegPath);
 const bot = new Telegraf(process.env.TELEGRAM_TOKEN);
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
@@ -20,7 +21,16 @@ async function getHistory(chatId) {
   return data ? JSON.parse(data) : [];
 }
 async function saveHistory(chatId, messages) {
-  await redis.set("history:" + chatId, JSON.stringify(messages.slice(-20)));
+  await redis.set("history:" + chatId, JSON.stringify(messages.slice(-30)));
+}
+async function getCorrections(chatId) {
+  const data = await redis.get("corrections:" + chatId);
+  return data ? JSON.parse(data) : [];
+}
+async function saveCorrection(chatId, correction) {
+  const corrections = await getCorrections(chatId);
+  corrections.push(correction);
+  await redis.set("corrections:" + chatId, JSON.stringify(corrections.slice(-20)));
 }
 async function parsePDF(buffer) {
   const pdfParse = require("pdf-parse");
@@ -63,14 +73,37 @@ async function parseTasks(text) {
   const raw = response.choices[0].message.content.replace(/```json|```/g, "").trim();
   return JSON.parse(raw);
 }
+async function needsSearch(text) {
+  const response = await groq.chat.completions.create({
+    model: "llama-3.3-70b-versatile",
+    messages: [
+      { role: "system", content: 'Определи нужен ли поиск в интернете для ответа на вопрос. Верни ТОЛЬКО "yes" или "no". Поиск нужен для: новостей, текущих событий, цен, погоды, актуальной информации. Не нужен для: личных задач, общих знаний, математики.' },
+      { role: "user", content: text }
+    ],
+  });
+  return response.choices[0].message.content.trim().toLowerCase() === "yes";
+}
+async function searchWeb(query) {
+  try {
+    const results = await search(query, { locale: "ru-ru" });
+    return results.results.slice(0, 3).map(r => `${r.title}: ${r.description}`).join("\n\n");
+  } catch (err) {
+    console.error("Search error:", err);
+    return null;
+  }
+}
 async function getTodayTasks() {
-  const tasks = await todoist.getTasks({ filter: "today" });
-  return tasks;
+  return await todoist.getTasks({ filter: "today" });
 }
 async function handleText(ctx, text) {
   const chatId = ctx.chat.id;
   if (ALLOWED_USER && String(chatId) !== String(ALLOWED_USER)) {
-    await ctx.reply("Извини, у тебя нет доступа.");
+    await ctx.reply("Нет доступа.");
+    return;
+  }
+  if (/(неправильно|не так|ошибся|исправь|не верно|запомни что|ты не прав)/i.test(text)) {
+    await saveCorrection(chatId, text);
+    await ctx.reply("Запомнил, учту в следующий раз.");
     return;
   }
   if (/(покажи задачи|мои задачи|задачи на сегодня|что на сегодня)/i.test(text)) {
@@ -98,13 +131,24 @@ async function handleText(ctx, text) {
     } catch (err) { console.error(err); }
   }
   const history = await getHistory(chatId);
+  const corrections = await getCorrections(chatId);
   const messages = [...history];
   if (docContexts[chatId]) {
     messages.unshift({ role: "system", content: "Содержимое документа:\n\n" + docContexts[chatId] });
   }
+  let searchContext = "";
+  if (await needsSearch(text)) {
+    const results = await searchWeb(text);
+    if (results) searchContext = "\n\nДанные из интернета:\n" + results;
+  }
   const now = new Date();
   const dateStr = now.toLocaleDateString("ru-RU", {day: "numeric", month: "long", year: "numeric", timeZone: "Europe/Samara"}) + " " + now.toLocaleTimeString("ru-RU", {hour: "2-digit", minute: "2-digit", timeZone: "Europe/Samara"});
-  messages.unshift({ role: "system", content: `Сейчас: ${dateStr}. Ты личный ассистент. Отвечай кратко и по делу. Без вступлений и лишних слов. Только суть. На русском языке.` });
+  let systemPrompt = `Сейчас: ${dateStr}. Ты личный ассистент. Отвечай кратко и по делу. Без вступлений. Только суть. На русском языке.`;
+  if (corrections.length > 0) {
+    systemPrompt += "\n\nПоправки от пользователя:\n" + corrections.join("\n");
+  }
+  if (searchContext) systemPrompt += searchContext;
+  messages.unshift({ role: "system", content: systemPrompt });
   messages.push({ role: "user", content: text });
   try {
     const response = await groq.chat.completions.create({ model: "llama-3.3-70b-versatile", messages });
@@ -122,26 +166,17 @@ bot.command("start", async (ctx) => {
   await ctx.reply(`👋 Привет! Я твой личный ассистент.
 
 Что умею:
-🎤 Голосовые сообщения — распознаю и выполняю
-✅ Задачи — добавляю в Todoist голосом или текстом
-📋 Показываю задачи на сегодня
-📄 Читаю PDF и Word документы
-💬 Отвечаю на вопросы кратко и по делу
+🎤 Голосовые — распознаю и выполняю
+✅ Задачи — добавляю в Todoist
+📋 /tasks — задачи на сегодня
+🔍 Ищу информацию в интернете
+📄 Читаю PDF и Word
+🧠 Учусь на твоих поправках
+💬 Отвечаю кратко и по делу
 
 Команды:
-/start — это меню
-/help — помощь
 /tasks — задачи на сегодня
 /clear — очистить историю`);
-});
-bot.command("help", async (ctx) => {
-  await ctx.reply(`Просто пиши или говори что нужно сделать.
-
-Примеры:
-- "Запиши задачу встреча завтра в 14:00"
-- "Что на сегодня?"
-- "Покажи мои задачи"
-- Отправь PDF или Word — задай вопрос по документу`);
 });
 bot.command("tasks", async (ctx) => {
   try {
@@ -178,12 +213,12 @@ bot.on("document", async (ctx) => {
       await ctx.reply("Читаю PDF...");
       const data = await parsePDF(buffer);
       docContexts[ctx.chat.id] = data.text.slice(0, 8000);
-      await ctx.reply("✅ PDF загружен! Задавай вопросы.");
+      await ctx.reply("✅ PDF загружен!");
     } else if (doc.mime_type === "application/vnd.openxmlformats-officedocument.wordprocessingml.document") {
       await ctx.reply("Читаю Word...");
       const data = await mammoth.extractRawText({ buffer });
       docContexts[ctx.chat.id] = data.value.slice(0, 8000);
-      await ctx.reply("✅ Word загружен! Задавай вопросы.");
+      await ctx.reply("✅ Word загружен!");
     } else {
       await ctx.reply("Поддерживаются только PDF и Word.");
     }
