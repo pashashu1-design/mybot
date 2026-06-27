@@ -1,10 +1,9 @@
 require("dotenv").config();
 const { Telegraf } = require("telegraf");
-const { GoogleGenerativeAI } = require("@google/generative-ai");
+const Groq = require("groq-sdk");
 
 const bot = new Telegraf(process.env.TELEGRAM_TOKEN);
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
+const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 
 const chats = {};
 
@@ -13,12 +12,24 @@ bot.on("text", async (ctx) => {
   const text = ctx.message.text;
 
   if (!chats[chatId]) {
-    chats[chatId] = model.startChat();
+    chats[chatId] = [];
   }
 
+  chats[chatId].push({ role: "user", content: text });
+
   try {
-    const result = await chats[chatId].sendMessage(text);
-    const reply = result.response.text();
+    const response = await groq.chat.completions.create({
+      model: "llama-3.3-70b-versatile",
+      messages: chats[chatId],
+    });
+
+    const reply = response.choices[0].message.content;
+    chats[chatId].push({ role: "assistant", content: reply });
+
+    if (chats[chatId].length > 20) {
+      chats[chatId] = chats[chatId].slice(-20);
+    }
+
     await ctx.reply(reply);
   } catch (err) {
     console.error(err);
