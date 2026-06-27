@@ -356,6 +356,15 @@ const startMsg = "Привет! Я твой личный ассистент.\n\n
   "/labels — метки\n" +
   "/clear — очистить историю";
 
+bot.command("debug", async (ctx) => {
+  const { allTasks } = await loadTodoistContext();
+  const sample = allTasks.slice(0, 3);
+  const info = sample.map(t => t.content + " | due: " + JSON.stringify(t.due)).join("
+");
+  await ctx.reply("Всего задач: " + allTasks.length + "
+
+" + info);
+});
 bot.command("start", async (ctx) => { await ctx.reply(startMsg); });
 bot.command("help", async (ctx) => { await ctx.reply(startMsg); });
 
