@@ -14,9 +14,7 @@ const todoist = new TodoistApi(process.env.TODOIST_TOKEN);
 const chats = {};
 const docContexts = {};
 async function parsePDF(buffer) {
-  const mod = require("pdf-parse");
-  const fn = mod.default || mod;
-  return fn(buffer);
+  return require("pdf-parse")(buffer);
 }
 async function transcribeVoice(fileUrl) {
   const oggPath = "/tmp/voice.ogg";
