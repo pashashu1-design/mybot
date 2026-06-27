@@ -54,7 +54,7 @@ async function parseTask(text) {
 async function handleText(ctx, text) {
   const chatId = ctx.chat.id;
   if (!chats[chatId]) chats[chatId] = [];
-  if (/(добавь задачу|создай задачу|напомни|задача)/i.test(text)) {
+  if (/(задач|запиши|добавь|создай|напомни|встрет|сделать|купить|позвонить|написать|отправить)/i.test(text)) {
     try {
       const task = await parseTask(text);
       if (!task.error) {
