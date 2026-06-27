@@ -70,6 +70,8 @@ async function handleText(ctx, text) {
   if (docContexts[chatId]) {
     messages.unshift({ role: "system", content: "Вот содержимое документа пользователя:\n\n" + docContexts[chatId] });
   }
+  const now = new Date(); const dateStr = now.toLocaleDateString("ru-RU", {day: "numeric", month: "long", year: "numeric"}) + " " + now.toLocaleTimeString("ru-RU", {hour: "2-digit", minute: "2-digit"});
+  messages.unshift({ role: "system", content: "Сейчас: " + dateStr + ". Отвечай на русском языке." });
   messages.push({ role: "user", content: text });
   const response = await groq.chat.completions.create({ model: "llama-3.3-70b-versatile", messages });
   const reply = response.choices[0].message.content;
