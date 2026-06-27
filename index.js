@@ -40,28 +40,31 @@ async function transcribeVoice(fileUrl) {
   fs.unlinkSync(mp3Path);
   return transcription.text;
 }
-async function parseTask(text) {
+async function parseTasks(text) {
   const today = new Date().toISOString().split("T")[0];
   const response = await groq.chat.completions.create({
     model: "llama-3.3-70b-versatile",
     messages: [
-      { role: "system", content: `Сегодня ${today}. Извлеки задачу из сообщения и верни ТОЛЬКО JSON: {"title": "...", "due": "YYYY-MM-DD"}. Если дата не указана — не включай поле due. Если это не задача — верни {"error": "not a task"}.` },
+      { role: "system", content: `Сегодня ${today}. Извлеки ВСЕ задачи из сообщения и верни ТОЛЬКО JSON массив: [{"title": "...", "due": "YYYY-MM-DD"}]. Если дата не указана не включай поле due. Если задач нет верни [].` },
       { role: "user", content: text }
     ],
   });
-  return JSON.parse(response.choices[0].message.content.replace(/```json|```/g, "").trim());
+  const raw = response.choices[0].message.content.replace(/```json|```/g, "").trim();
+  return JSON.parse(raw);
 }
 async function handleText(ctx, text) {
   const chatId = ctx.chat.id;
   if (!chats[chatId]) chats[chatId] = [];
   if (/(задач|запиши|добавь|создай|напомни|встрет|сделать|купить|позвонить|написать|отправить)/i.test(text)) {
     try {
-      const task = await parseTask(text);
-      if (!task.error) {
-        const taskData = { content: task.title };
-        if (task.due) taskData.dueDate = task.due;
-        await todoist.addTask(taskData);
-        await ctx.reply("✅ Задача добавлена в Todoist: " + task.title);
+      const tasks = await parseTasks(text);
+      if (tasks.length > 0) {
+        for (const task of tasks) {
+          const taskData = { content: task.title };
+          if (task.due) taskData.dueDate = task.due;
+          await todoist.addTask(taskData);
+        }
+        await ctx.reply("✅ Добавлено задач в Todoist: " + tasks.length);
         return;
       }
     } catch (err) { console.error(err); }
@@ -70,7 +73,8 @@ async function handleText(ctx, text) {
   if (docContexts[chatId]) {
     messages.unshift({ role: "system", content: "Вот содержимое документа пользователя:\n\n" + docContexts[chatId] });
   }
-  const now = new Date(); const dateStr = now.toLocaleDateString("ru-RU", {day: "numeric", month: "long", year: "numeric", timeZone: "Europe/Samara"}) + " " + now.toLocaleTimeString("ru-RU", {hour: "2-digit", minute: "2-digit", timeZone: "Europe/Samara"});
+  const now = new Date();
+  const dateStr = now.toLocaleDateString("ru-RU", {day: "numeric", month: "long", year: "numeric", timeZone: "Europe/Samara"}) + " " + now.toLocaleTimeString("ru-RU", {hour: "2-digit", minute: "2-digit", timeZone: "Europe/Samara"});
   messages.unshift({ role: "system", content: "Сейчас: " + dateStr + ". Отвечай на русском языке." });
   messages.push({ role: "user", content: text });
   const response = await groq.chat.completions.create({ model: "llama-3.3-70b-versatile", messages });
