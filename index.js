@@ -6,11 +6,13 @@ const fs = require("fs");
 const ffmpeg = require("fluent-ffmpeg");
 const ffmpegPath = require("ffmpeg-static");
 const { TodoistApi } = require("@doist/todoist-api-typescript");
+const pdfParse = require("pdf-parse");
 ffmpeg.setFfmpegPath(ffmpegPath);
 const bot = new Telegraf(process.env.TELEGRAM_TOKEN);
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 const todoist = new TodoistApi(process.env.TODOIST_TOKEN);
 const chats = {};
+const pdfContexts = {};
 async function transcribeVoice(fileUrl) {
   const oggPath = "/tmp/voice.ogg";
   const mp3Path = "/tmp/voice.mp3";
@@ -65,12 +67,20 @@ async function handleText(ctx, text) {
       console.error(err);
     }
   }
-  chats[chatId].push({ role: "user", content: text });
+  const messages = [...chats[chatId]];
+  if (pdfContexts[chatId]) {
+    messages.unshift({
+      role: "system",
+      content: "Вот содержимое PDF документа пользователя:\n\n" + pdfContexts[chatId]
+    });
+  }
+  messages.push({ role: "user", content: text });
   const response = await groq.chat.completions.create({
     model: "llama-3.3-70b-versatile",
-    messages: chats[chatId],
+    messages,
   });
   const reply = response.choices[0].message.content;
+  chats[chatId].push({ role: "user", content: text });
   chats[chatId].push({ role: "assistant", content: reply });
   if (chats[chatId].length > 20) chats[chatId] = chats[chatId].slice(-20);
   await ctx.reply(reply);
@@ -89,6 +99,24 @@ bot.on("voice", async (ctx) => {
   } catch (err) {
     console.error(err);
     ctx.reply("Не удалось распознать голос.");
+  }
+});
+bot.on("document", async (ctx) => {
+  try {
+    const doc = ctx.message.document;
+    if (!doc.mime_type || doc.mime_type !== "application/pdf") {
+      await ctx.reply("Пожалуйста, отправь PDF файл.");
+      return;
+    }
+    await ctx.reply("Читаю PDF...");
+    const fileUrl = await ctx.telegram.getFileLink(doc.file_id);
+    const response = await axios({ url: fileUrl.href, responseType: "arraybuffer" });
+    const data = await pdfParse(Buffer.from(response.data));
+    pdfContexts[ctx.chat.id] = data.text.slice(0, 8000);
+    await ctx.reply("✅ PDF загружен! Теперь задавай вопросы по документу.");
+  } catch (err) {
+    console.error(err);
+    ctx.reply("Не удалось прочитать PDF.");
   }
 });
 bot.launch();
