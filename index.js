@@ -6,7 +6,7 @@ const fs = require("fs");
 const ffmpeg = require("fluent-ffmpeg");
 const ffmpegPath = require("ffmpeg-static");
 const { TodoistApi } = require("@doist/todoist-api-typescript");
-const pdfParse = require("pdf-parse");
+const pdfParse = require("pdf-parse").default || require("pdf-parse");
 const mammoth = require("mammoth");
 ffmpeg.setFfmpegPath(ffmpegPath);
 const bot = new Telegraf(process.env.TELEGRAM_TOKEN);
