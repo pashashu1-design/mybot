@@ -99,6 +99,7 @@ async function searchWeb(query) {
   } catch (err) { return null; }
 }
 function formatTaskList(tasks) {
+  if (!Array.isArray(tasks)) tasks = tasks.results || [];
   if (tasks.length === 0) return "Задач нет.";
   return tasks.map((t, i) => {
     const priority = ["", "🔴", "🟠", "🔵", "⚪"][t.priority] || "⚪";
