@@ -66,7 +66,19 @@ async function parseTasks(text) {
   const response = await groq.chat.completions.create({
     model: "llama-3.3-70b-versatile",
     messages: [
-      { role: "system", content: `Сегодня ${today}, ISO: ${todayISO}. Извлеки ВСЕ задачи. Верни ТОЛЬКО JSON массив: [{"title": "...", "due_datetime": "YYYY-MM-DDTHH:MM:00"}]. Если время не указано используй "09:00". Если дата не указана используй сегодня. Если задач нет верни [].` },
+      { role: "system", content: `Сегодня ${today}, ISO: ${todayISO}. Извлеки ВСЕ задачи. Верни ТОЛЬКО JSON массив: [{"title": "...", "due_datetime": "YYYY-MM-DDTHH:MM:00", "priority": 1-4}]. priority: 4=обычная, 3=средняя, 2=высокая, 1=срочная. Если время не указано используй "09:00". Если дата не указана используй сегодня. Если задач нет верни [].` },
+      { role: "user", content: text }
+    ],
+  });
+  const raw = response.choices[0].message.content.replace(/```json|```/g, "").trim();
+  return JSON.parse(raw);
+}
+async function parseTaskAction(text, tasks) {
+  const list = tasks.map((t, i) => `${i+1}. ${t.content}`).join(", ");
+  const response = await groq.chat.completions.create({
+    model: "llama-3.3-70b-versatile",
+    messages: [
+      { role: "system", content: `Из списка задач найди нужную и верни ТОЛЬКО JSON: {"num": номер, "new_title": "новое название или null", "new_datetime": "YYYY-MM-DDTHH:MM:00 или null"}. Список: ${list}` },
       { role: "user", content: text }
     ],
   });
@@ -77,7 +89,7 @@ async function needsSearch(text) {
   const response = await groq.chat.completions.create({
     model: "llama-3.3-70b-versatile",
     messages: [
-      { role: "system", content: 'Определи нужен ли поиск в интернете для ответа на вопрос. Верни ТОЛЬКО "yes" или "no". Поиск нужен для: новостей, текущих событий, цен, погоды, актуальной информации. Не нужен для: личных задач, общих знаний, математики.' },
+      { role: "system", content: 'Нужен ли поиск в интернете? Верни ТОЛЬКО "yes" или "no". yes: новости, события, цены, погода, актуальные данные. no: личные задачи, математика, общие знания.' },
       { role: "user", content: text }
     ],
   });
@@ -87,13 +99,18 @@ async function searchWeb(query) {
   try {
     const results = await search(query, { locale: "ru-ru" });
     return results.results.slice(0, 3).map(r => `${r.title}: ${r.description}`).join("\n\n");
-  } catch (err) {
-    console.error("Search error:", err);
-    return null;
-  }
+  } catch (err) { return null; }
 }
-async function getTodayTasks() {
-  return await todoist.getTasks({ filter: "today" });
+async function getFilteredTasks(filter) {
+  return await todoist.getTasks({ filter });
+}
+function formatTaskList(tasks) {
+  if (tasks.length === 0) return "Задач нет.";
+  return tasks.map((t, i) => {
+    const priority = ["", "🔴", "🟠", "🔵", "⚪"][t.priority] || "⚪";
+    const time = t.due && t.due.datetime ? " — " + new Date(t.due.datetime).toLocaleTimeString("ru-RU", {hour: "2-digit", minute: "2-digit", timeZone: "Europe/Samara"}) : "";
+    return `${i+1}. ${priority} ${t.content}${time}`;
+  }).join("\n");
 }
 async function handleText(ctx, text) {
   const chatId = ctx.chat.id;
@@ -103,18 +120,73 @@ async function handleText(ctx, text) {
   }
   if (/(неправильно|не так|ошибся|исправь|не верно|запомни что|ты не прав)/i.test(text)) {
     await saveCorrection(chatId, text);
-    await ctx.reply("Запомнил, учту в следующий раз.");
+    await ctx.reply("Запомнил.");
     return;
+  }
+  if (/(выполнено|сделано|завершено|готово|выполнил|сделал)/i.test(text)) {
+    try {
+      const tasks = await getFilteredTasks("today");
+      if (tasks.length === 0) { await ctx.reply("Нет задач на сегодня."); return; }
+      const action = await parseTaskAction(text, tasks);
+      if (action.num > 0 && tasks[action.num - 1]) {
+        await todoist.closeTask(tasks[action.num - 1].id);
+        await ctx.reply("✅ Выполнено: " + tasks[action.num - 1].content);
+      } else { await ctx.reply("Не нашёл такую задачу."); }
+      return;
+    } catch (err) { console.error(err); }
+  }
+  if (/(удали|удалить|убери|убрать задачу)/i.test(text)) {
+    try {
+      const tasks = await getFilteredTasks("today");
+      if (tasks.length === 0) { await ctx.reply("Нет задач на сегодня."); return; }
+      const action = await parseTaskAction(text, tasks);
+      if (action.num > 0 && tasks[action.num - 1]) {
+        await todoist.deleteTask(tasks[action.num - 1].id);
+        await ctx.reply("🗑 Удалено: " + tasks[action.num - 1].content);
+      } else { await ctx.reply("Не нашёл такую задачу."); }
+      return;
+    } catch (err) { console.error(err); }
+  }
+  if (/(измени|перенеси|переименуй|измените время)/i.test(text)) {
+    try {
+      const tasks = await getFilteredTasks("today");
+      if (tasks.length === 0) { await ctx.reply("Нет задач на сегодня."); return; }
+      const action = await parseTaskAction(text, tasks);
+      if (action.num > 0 && tasks[action.num - 1]) {
+        const updateData = {};
+        if (action.new_title) updateData.content = action.new_title;
+        if (action.new_datetime) updateData.dueDatetime = action.new_datetime;
+        await todoist.updateTask(tasks[action.num - 1].id, updateData);
+        await ctx.reply("✏️ Изменено: " + (action.new_title || tasks[action.num - 1].content));
+      } else { await ctx.reply("Не нашёл такую задачу."); }
+      return;
+    } catch (err) { console.error(err); }
+  }
+  if (/(просроченные|просрочен|опоздал)/i.test(text)) {
+    try {
+      const tasks = await getFilteredTasks("overdue");
+      await ctx.reply("⚠️ Просроченные задачи:\n" + formatTaskList(tasks));
+      return;
+    } catch (err) { console.error(err); }
+  }
+  if (/(завтра|задачи на завтра)/i.test(text)) {
+    try {
+      const tasks = await getFilteredTasks("tomorrow");
+      await ctx.reply("📋 Задачи на завтра:\n" + formatTaskList(tasks));
+      return;
+    } catch (err) { console.error(err); }
   }
   if (/(покажи задачи|мои задачи|задачи на сегодня|что на сегодня)/i.test(text)) {
     try {
-      const tasks = await getTodayTasks();
-      if (tasks.length === 0) {
-        await ctx.reply("На сегодня задач нет.");
-      } else {
-        const list = tasks.map((t, i) => `${i+1}. ${t.content}${t.due && t.due.datetime ? " — " + new Date(t.due.datetime).toLocaleTimeString("ru-RU", {hour: "2-digit", minute: "2-digit", timeZone: "Europe/Samara"}) : ""}`).join("\n");
-        await ctx.reply("📋 Задачи на сегодня:\n" + list);
-      }
+      const tasks = await getFilteredTasks("today");
+      await ctx.reply("📋 Сегодня:\n" + formatTaskList(tasks));
+      return;
+    } catch (err) { console.error(err); }
+  }
+  if (/(срочн|важн|приоритет)/i.test(text)) {
+    try {
+      const tasks = await getFilteredTasks("p1 | p2");
+      await ctx.reply("🔴 Срочные и важные:\n" + formatTaskList(tasks));
       return;
     } catch (err) { console.error(err); }
   }
@@ -123,7 +195,7 @@ async function handleText(ctx, text) {
       const tasks = await parseTasks(text);
       if (tasks.length > 0) {
         for (const task of tasks) {
-          await todoist.addTask({ content: task.title, dueDatetime: task.due_datetime });
+          await todoist.addTask({ content: task.title, dueDatetime: task.due_datetime, priority: task.priority || 4 });
         }
         await ctx.reply("✅ " + tasks.map(t => t.title).join("\n"));
         return;
@@ -144,9 +216,7 @@ async function handleText(ctx, text) {
   const now = new Date();
   const dateStr = now.toLocaleDateString("ru-RU", {day: "numeric", month: "long", year: "numeric", timeZone: "Europe/Samara"}) + " " + now.toLocaleTimeString("ru-RU", {hour: "2-digit", minute: "2-digit", timeZone: "Europe/Samara"});
   let systemPrompt = `Сейчас: ${dateStr}. Ты личный ассистент. Отвечай кратко и по делу. Без вступлений. Только суть. На русском языке.`;
-  if (corrections.length > 0) {
-    systemPrompt += "\n\nПоправки от пользователя:\n" + corrections.join("\n");
-  }
+  if (corrections.length > 0) systemPrompt += "\n\nПоправки от пользователя:\n" + corrections.join("\n");
   if (searchContext) systemPrompt += searchContext;
   messages.unshift({ role: "system", content: systemPrompt });
   messages.push({ role: "user", content: text });
@@ -167,27 +237,38 @@ bot.command("start", async (ctx) => {
 
 Что умею:
 🎤 Голосовые — распознаю и выполняю
-✅ Задачи — добавляю в Todoist
-📋 /tasks — задачи на сегодня
-🔍 Ищу информацию в интернете
+✅ Задачи — добавляю в Todoist с приоритетом
+📋 Просмотр задач на сегодня и завтра
+⚠️ Просроченные задачи
+✏️ Редактирование и удаление задач
+☑️ Отметка задач выполненными
+🔴 Срочные и важные задачи
+🔍 Поиск в интернете
 📄 Читаю PDF и Word
 🧠 Учусь на твоих поправках
-💬 Отвечаю кратко и по делу
 
 Команды:
 /tasks — задачи на сегодня
+/tomorrow — задачи на завтра
+/overdue — просроченные
+/urgent — срочные и важные
 /clear — очистить историю`);
 });
 bot.command("tasks", async (ctx) => {
-  try {
-    const tasks = await getTodayTasks();
-    if (tasks.length === 0) {
-      await ctx.reply("На сегодня задач нет.");
-    } else {
-      const list = tasks.map((t, i) => `${i+1}. ${t.content}${t.due && t.due.datetime ? " — " + new Date(t.due.datetime).toLocaleTimeString("ru-RU", {hour: "2-digit", minute: "2-digit", timeZone: "Europe/Samara"}) : ""}`).join("\n");
-      await ctx.reply("📋 Задачи на сегодня:\n" + list);
-    }
-  } catch (err) { ctx.reply("Ошибка при получении задач."); }
+  const tasks = await getFilteredTasks("today");
+  await ctx.reply("📋 Сегодня:\n" + formatTaskList(tasks));
+});
+bot.command("tomorrow", async (ctx) => {
+  const tasks = await getFilteredTasks("tomorrow");
+  await ctx.reply("📋 Завтра:\n" + formatTaskList(tasks));
+});
+bot.command("overdue", async (ctx) => {
+  const tasks = await getFilteredTasks("overdue");
+  await ctx.reply("⚠️ Просроченные:\n" + formatTaskList(tasks));
+});
+bot.command("urgent", async (ctx) => {
+  const tasks = await getFilteredTasks("p1 | p2");
+  await ctx.reply("🔴 Срочные и важные:\n" + formatTaskList(tasks));
 });
 bot.command("clear", async (ctx) => {
   await redis.del("history:" + ctx.chat.id);
